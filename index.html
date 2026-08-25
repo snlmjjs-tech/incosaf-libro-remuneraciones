@@ -29,7 +29,6 @@
   }
   ::selection{ background:var(--gold); color:var(--white); }
   .app{ display:flex; min-height:100vh; }
-  /* SIDEBAR */
   .sidebar{
     width:230px; flex-shrink:0; background:var(--ledger-dark);
     color:var(--paper); display:flex; flex-direction:column;
@@ -48,7 +47,6 @@
   .tab-btn:hover{ background:rgba(255,255,255,.06); color:#fff; }
   .tab-btn.active{ background:var(--ledger); color:#fff; box-shadow: inset 3px 0 0 var(--gold); }
   .sidebar-foot{ margin-top:auto; padding:16px 20px; font-size:.68rem; color:rgba(255,255,255,.4); border-top:1px solid rgba(255,255,255,.1);}
-  /* MAIN */
   main{ flex:1; padding:20px 40px 60px; max-width:1200px; }
   .page-head{ display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:22px; flex-wrap:wrap; gap:12px;}
   h1{
@@ -128,7 +126,6 @@
     main{ padding:20px; }
   }
 
-  /* ---- Acceso y roles (IncoSAF) ---- */
   .gate-screen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:32px; }
   .gate-card{
     background:var(--white); border:1px solid var(--line); border-radius:8px;
@@ -161,7 +158,6 @@
   }
   input:disabled, select:disabled, textarea:disabled{ opacity:.55; cursor:not-allowed; background:var(--paper-2); }
 
-  /* ---- Vista de impresión ---- */
   #print-area{ display:none; }
   body.printing #root{ display:none; }
   body.printing #print-area{ display:block; }
@@ -185,34 +181,53 @@
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">
+  <div class="gate-screen"><div class="gate-card">
+    <div class="gate-mark">IncoSAF</div>
+    <div class="gate-sub">Cargando…</div>
+    <p style="text-align:center;">Conectando con la plataforma.</p>
+  </div></div>
+</div>
 <div id="print-area"></div>
 <div id="toast" class="toast"></div>
 <div id="modal-root"></div>
-<script type="application/json" id="app-data">{}</script>
-<script id="app-logic">
+
+<script type="module">
 /* ============================================================
-   Libro de Remuneraciones IncoSAF
-   Plataforma compartida: cada estudiante entra con su propio
-   código y lleva su propio libro de remuneraciones; el profesor
-   entra con su código y puede revisar (solo lectura) el trabajo
-   de cualquier estudiante. Los datos se guardan en la plataforma
-   compartida (capacidad "artifact"); si esa capacidad no está
-   disponible, se guarda solo en este navegador como respaldo.
+   Libro de Remuneraciones IncoSAF — respaldado en Firebase
+   (mismo proyecto que incosafinterno, colecciones "remu_*"
+   separadas de las de inspectoría/suspensiones).
+
+   Cada estudiante entra con su propio código y lleva su propio
+   libro de remuneraciones; el profesor entra con su código y
+   puede revisar (solo lectura) el trabajo de cualquier
+   estudiante. Los datos quedan en Firestore, así que cualquier
+   computador ve lo mismo al instante.
    ============================================================ */
 
-/* ---- Captura de bloques estáticos (para poder republicar la
-   página completa sin retipear su propio código cada vez) ---- */
-var STATIC_STYLE_HTML = document.getElementById('app-style').outerHTML;
-var STATIC_LOGIC_HTML = document.getElementById('app-logic').outerHTML;
-var STATIC_HEAD_FONTS =
-  '<link rel="preconnect" href="https://fonts.googleapis.com">\n' +
-  '<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">';
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+import {
+  getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
+  onSnapshot, query, where, orderBy, serverTimestamp, writeBatch
+} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
-var LOCAL_KEY = 'incosaf_localdata_v1';
-var SESSION_KEY = 'incosaf_session_v1';
-var UI_KEY = 'incosaf_ui_v1';
-var MAX_EMPRESAS = 30;
+const firebaseConfig = {
+  apiKey: "AIzaSyAMg-fnOkEdg_whrsj3O-HfKrezTXfYbXg",
+  authDomain: "incosafintranet.firebaseapp.com",
+  projectId: "incosafintranet",
+  storageBucket: "incosafintranet.firebasestorage.app",
+  messagingSenderId: "466123047655",
+  appId: "1:466123047655:web:510e737d3cb0eabcf61842"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+const SESSION_KEY = 'incosaf_remu_session_v1';
+const UI_KEY = 'incosaf_remu_ui_v1';
+const MAX_EMPRESAS = 30;
 
 /* ---- Utilidades ---- */
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -238,10 +253,11 @@ function defaultParametros(){
       {hasta: 620251, monto: 22050},
       {hasta: 905941, monto: 13530},
       {hasta: 1412957, monto: 4277},
-      {hasta: Infinity, monto: 0},
+      {hasta: null, monto: 0},
     ]
   };
 }
+function asigHasta(t){ return t.hasta==null ? Infinity : t.hasta; }
 
 function tablaImpuestoUnico(baseUTM){
   var tramos = [
@@ -267,7 +283,7 @@ function tablaImpuestoUnico(baseUTM){
 
 function montoAsigFamiliar(renta, cargas, params){
   if(!cargas) return 0;
-  var tramo = params.asigFamiliar.find(function(t){ return renta <= t.hasta; }) || params.asigFamiliar[params.asigFamiliar.length-1];
+  var tramo = params.asigFamiliar.find(function(t){ return renta <= asigHasta(t); }) || params.asigFamiliar[params.asigFamiliar.length-1];
   return tramo.monto * cargas;
 }
 
@@ -348,31 +364,20 @@ function genCodigoEstudiante(){
     var s = '';
     for(var i=0;i<4;i++) s += chars[Math.floor(Math.random()*chars.length)];
     code = 'INC-' + s;
-  } while(appData.estudiantes.some(function(e){ return e.codigo===code; }) || code.toLowerCase()===(appData.profesorCodigo||'').toLowerCase());
+  } while(estudiantes.some(function(e){ return e.codigo===code; }) || (configDoc && code.toLowerCase()===(configDoc.profesorCodigo||'').toLowerCase()));
   return code;
 }
 
-/* ---- Estado compartido (persistido) ---- */
-var appData = loadAppData();
-function loadAppData(){
-  var el = document.getElementById('app-data');
-  var data = null;
-  if(el && el.textContent && el.textContent.trim()){
-    try{ data = JSON.parse(el.textContent); }catch(e){ data = null; }
-  }
-  if(!data || typeof data !== 'object' || !Array.isArray(data.estudiantes)){
-    try{
-      var local = localStorage.getItem(LOCAL_KEY);
-      if(local){ var ld = JSON.parse(local); if(ld && Array.isArray(ld.estudiantes)) data = ld; }
-    }catch(e){}
-  }
-  if(!data || typeof data !== 'object' || !Array.isArray(data.estudiantes)){
-    data = { v:1, profesorCodigo:null, estudiantes:[] };
-  }
-  return data;
-}
-
-function getEstudiante(id){ return appData.estudiantes.find(function(e){ return e.id===id; }) || null; }
+/* ---- Estado en memoria (reflejo de Firestore, actualizado por onSnapshot) ---- */
+var configDoc = null, configLoaded = false;
+var estudiantes = [], estudiantesLoaded = false;
+var empresas = [], empresasLoaded = false;
+var trabajadores = [], trabajadoresLoaded = false;
+var parametrosActivos = null, parametrosLoaded = false;
+var movCache = {};
+var currentActiveId = null;
+var unsubEmpresas = null, unsubTrabajadores = null, unsubParametros = null;
+var fatalError = null;
 
 /* ---- Sesión y preferencias de navegación (solo en este navegador) ---- */
 var session = loadSession();
@@ -388,74 +393,84 @@ function loadUi(){
 }
 function saveUi(){ try{ localStorage.setItem(UI_KEY, JSON.stringify(ui)); }catch(e){} }
 
-function activeEstudiante(){
-  if(session.role==='estudiante') return getEstudiante(session.estudianteId);
-  if(session.role==='profesor' && session.viewingId) return getEstudiante(session.viewingId);
+function getActiveId(){
+  if(session.role==='estudiante') return session.estudianteId;
+  if(session.role==='profesor' && session.viewingId) return session.viewingId;
   return null;
 }
+function getEstudiante(id){ return estudiantes.find(function(e){ return e.id===id; }) || null; }
 function isReadOnly(){ return session.role==='profesor' && !!session.viewingId; }
 
-/* ---- Persistencia (capacidad "artifact") ---- */
-var artifactApi; // undefined = por resolver, null = no disponible, objeto = disponible
-var canWrite = true;
-var artifactApiPromise = (function(){
-  return Promise.resolve().then(function(){
-    try{
-      if(window.claude && typeof window.claude.use === 'function'){
-        return window.claude.use('artifact').then(function(api){ artifactApi = api; return api; });
-      }
-    }catch(e){}
-    artifactApi = null;
-    return null;
-  }).catch(function(){ artifactApi = null; return null; });
-})();
-
-function buildFullHtml(data){
-  var dataJson = JSON.stringify(data).replace(/</g, '\\u003C');
-  return '<!doctype html>\n<html lang="es-CL">\n<head>\n'
-    + '<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-    + '<title>Libro de Remuneraciones IncoSAF</title>\n'
-    + STATIC_HEAD_FONTS + '\n'
-    + STATIC_STYLE_HTML
-    + '\n</head>\n<body>\n'
-    + '<div id="root"></div>\n<div id="print-area"></div>\n<div id="toast" class="toast"></div>\n<div id="modal-root"></div>\n'
-    + '<script type="application/json" id="app-data">' + dataJson + '<' + '/script>\n'
-    + STATIC_LOGIC_HTML
-    + '\n</body>\n</html>';
-}
-
-function handlePublishError(err){
-  var code = err && err.code;
-  if(code==='conflict'){
-    toast('Otro cambio se guardó justo ahora; actualizando con la versión más reciente…');
-  } else if(code==='not_writer' || code==='not_granted' || code==='capability_disabled' || code==='not_declared'){
-    canWrite = false;
-    try{ localStorage.setItem(LOCAL_KEY, JSON.stringify(appData)); }catch(e){}
-    toast('No tienes permiso de edición en esta plataforma compartida. Se guardó una copia temporal solo en este navegador — pide a tu profesor que comparta el enlace con permiso de editor.');
-  } else if(code==='too_large'){
-    toast('Los datos son demasiado grandes para guardar. Elimina información antigua e inténtalo de nuevo.');
-  } else {
-    toast('No se pudo guardar' + (err && err.message ? (': ' + err.message) : '') + '. Vuelve a intentarlo.');
-  }
-}
-
-async function guardar(msgExito){
-  if(artifactApi === undefined){ await artifactApiPromise; }
-  if(artifactApi && canWrite){
-    try{
-      await artifactApi.publish(buildFullHtml(appData));
-      return true; // la vista se recargará sola con los datos ya guardados
-    }catch(err){
-      handlePublishError(err);
-      render();
-      return false;
-    }
-  } else {
-    try{ localStorage.setItem(LOCAL_KEY, JSON.stringify(appData)); }catch(e){}
-    if(msgExito) toast(msgExito + (artifactApi===null ? ' (guardado solo en este navegador; sin conexión a la plataforma compartida)' : ''));
+/* ---- Arranque: autenticación anónima + escuchas en tiempo real ---- */
+async function boot(){
+  try{
+    await new Promise(function(resolve, reject){
+      onAuthStateChanged(auth, function(user){
+        if(user){ resolve(); }
+        else { signInAnonymously(auth).catch(reject); }
+      }, reject);
+    });
+  }catch(err){
+    fatalError = 'No se pudo conectar con Firebase: ' + err.message + '. Verifica que "Anónimo" esté habilitado en Authentication → Método de acceso.';
     render();
-    return true;
+    return;
   }
+
+  onSnapshot(doc(db,'remu_config','main'), function(snap){
+    configDoc = snap.exists() ? snap.data() : null;
+    configLoaded = true;
+    render();
+  }, function(err){
+    fatalError = 'No se pudo leer la configuración: ' + err.message + '. Revisa las reglas de seguridad de Firestore.';
+    render();
+  });
+
+  onSnapshot(query(collection(db,'remu_estudiantes'), orderBy('nombre')), function(snap){
+    estudiantes = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+    estudiantesLoaded = true;
+    render();
+  }, function(err){
+    fatalError = 'No se pudo leer la lista de estudiantes: ' + err.message;
+    render();
+  });
+}
+boot();
+
+function refreshActiveListeners(){
+  var id = getActiveId();
+  if(id === currentActiveId) return;
+  currentActiveId = id;
+  if(unsubEmpresas) unsubEmpresas();
+  if(unsubTrabajadores) unsubTrabajadores();
+  if(unsubParametros) unsubParametros();
+  empresas = []; trabajadores = []; parametrosActivos = null;
+  empresasLoaded = trabajadoresLoaded = parametrosLoaded = false;
+  unsubEmpresas = unsubTrabajadores = unsubParametros = null;
+  if(!id){ render(); return; }
+
+  unsubEmpresas = onSnapshot(query(collection(db,'remu_empresas'), where('estudianteId','==',id)), function(snap){
+    empresas = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); }).sort(function(a,b){ return a.razonSocial.localeCompare(b.razonSocial,'es'); });
+    empresasLoaded = true;
+    if(!ui.empresaId && empresas.length){ ui.empresaId = empresas[0].id; saveUi(); }
+    render();
+  }, function(err){ toast('No se pudieron cargar las empresas: ' + err.message); });
+
+  unsubTrabajadores = onSnapshot(query(collection(db,'remu_trabajadores'), where('estudianteId','==',id)), function(snap){
+    trabajadores = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+    trabajadoresLoaded = true;
+    render();
+  }, function(err){ toast('No se pudieron cargar los trabajadores: ' + err.message); });
+
+  unsubParametros = onSnapshot(doc(db,'remu_parametros', id), function(snap){
+    if(snap.exists()){
+      parametrosActivos = snap.data();
+    } else {
+      parametrosActivos = defaultParametros();
+      setDoc(doc(db,'remu_parametros', id), parametrosActivos).catch(function(){});
+    }
+    parametrosLoaded = true;
+    render();
+  }, function(err){ toast('No se pudieron cargar los parámetros: ' + err.message); });
 }
 
 /* ---- Utilidades de interfaz ---- */
@@ -464,7 +479,7 @@ function toast(msg){
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toast._t);
-  toast._t = setTimeout(function(){ el.classList.remove('show'); }, 3200);
+  toast._t = setTimeout(function(){ el.classList.remove('show'); }, 3400);
 }
 
 function openModal(title, bodyHtml, onSave, saveLabel){
@@ -494,9 +509,24 @@ function openModal(title, bodyHtml, onSave, saveLabel){
 /* ---- Render ---- */
 function render(){
   document.title = 'Libro de Remuneraciones IncoSAF';
-  if(!appData.profesorCodigo){ renderBootstrap(); }
-  else if(!session || !session.role){ renderLogin(); }
-  else { renderApp(); }
+  if(fatalError){ renderFatal(); return; }
+  if(!configLoaded || !estudiantesLoaded){ renderLoading(); return; }
+  if(!configDoc || !configDoc.profesorCodigo){ renderBootstrap(); return; }
+  if(!session || !session.role){ renderLogin(); return; }
+  refreshActiveListeners();
+  renderApp();
+}
+
+function renderLoading(){
+  document.getElementById('root').innerHTML =
+    '<div class="gate-screen"><div class="gate-card"><div class="gate-mark">IncoSAF</div>' +
+    '<div class="gate-sub">Cargando…</div><p style="text-align:center;">Conectando con la plataforma.</p></div></div>';
+}
+
+function renderFatal(){
+  document.getElementById('root').innerHTML =
+    '<div class="gate-screen"><div class="gate-card"><div class="gate-mark">IncoSAF</div>' +
+    '<div class="gate-sub">No se pudo conectar</div><div class="gate-error">' + fatalError + '</div></div></div>';
 }
 
 function renderBootstrap(){
@@ -517,10 +547,10 @@ function renderBootstrap(){
     var errEl = document.getElementById('boot-error');
     if(c1.length < 4){ errEl.innerHTML = '<div class="gate-error">El código debe tener al menos 4 caracteres.</div>'; return; }
     if(c1 !== c2){ errEl.innerHTML = '<div class="gate-error">Los códigos no coinciden.</div>'; return; }
-    appData.profesorCodigo = c1;
-    appData.estudiantes = appData.estudiantes || [];
-    appData.v = 1;
-    await guardar('Plataforma creada correctamente');
+    try{
+      await setDoc(doc(db,'remu_config','main'), { profesorCodigo: c1 });
+      toast('Plataforma creada correctamente');
+    }catch(err){ errEl.innerHTML = '<div class="gate-error">No se pudo guardar: ' + err.message + '</div>'; }
   };
 }
 
@@ -539,11 +569,11 @@ function renderLogin(){
     var code = document.getElementById('login-code').value.trim();
     var errEl = document.getElementById('login-error');
     if(!code){ errEl.innerHTML = '<div class="gate-error">Ingresa un código.</div>'; return; }
-    if(code.toLowerCase() === (appData.profesorCodigo||'').toLowerCase()){
+    if(code.toLowerCase() === (configDoc.profesorCodigo||'').toLowerCase()){
       session = { role:'profesor', estudianteId:null, viewingId:null };
       saveSession(); ui.tab='estudiantes'; saveUi(); render(); return;
     }
-    var est = appData.estudiantes.find(function(e){ return e.codigo && e.codigo.toLowerCase()===code.toLowerCase(); });
+    var est = estudiantes.find(function(e){ return e.codigo && e.codigo.toLowerCase()===code.toLowerCase(); });
     if(est){
       session = { role:'estudiante', estudianteId: est.id, viewingId:null };
       saveSession(); ui.tab='empresas'; saveUi(); render(); return;
@@ -574,7 +604,7 @@ function renderApp(){
     '<div class="app"><aside class="sidebar">' +
     '<div class="brand"><div class="mark">IncoSAF</div><div class="sub">Libro de Remuneraciones</div></div>' +
     '<nav id="nav"></nav>' +
-    '<div class="sidebar-foot">' + (session.role==='profesor' ? 'Modo profesor: revisas el trabajo de tus estudiantes.' : 'Tope de ' + MAX_EMPRESAS + ' empresas por estudiante.') + '<br>Datos guardados en la plataforma compartida.</div>' +
+    '<div class="sidebar-foot">' + (session.role==='profesor' ? 'Modo profesor: revisas el trabajo de tus estudiantes.' : 'Tope de ' + MAX_EMPRESAS + ' empresas por estudiante.') + '<br>Datos guardados en Firebase (en la nube).</div>' +
     '</aside><main id="main"></main></div>';
 
   var nav = document.getElementById('nav');
@@ -591,21 +621,19 @@ function renderApp(){
   var main = document.getElementById('main');
   var who = session.role==='profesor' ? 'Profesor' : ((getEstudiante(session.estudianteId)||{}).nombre || 'Estudiante') + ' · Estudiante';
   var top = '<div class="top-session"><span class="who">' + who + '</span><button id="btn-logout">Cerrar sesión</button></div>';
-  var localBanner = artifactApi===null ? '<div class="local-banner">Esta vista no está conectada a la plataforma compartida: los cambios solo se guardan en este navegador.</div>' : '';
   var banner = '';
   if(isReadOnly()){
     var e = getEstudiante(session.viewingId);
     banner = '<div class="role-banner"><span>Modo profesor — revisando el trabajo de <strong>' + (e?e.nombre:'—') + '</strong> (solo lectura)</span><button class="btn secondary" data-act="volver-lista">Volver al listado</button></div>';
   }
 
-  main.innerHTML = top + localBanner + banner + renderTabContent();
+  main.innerHTML = top + banner + renderTabContent();
   document.getElementById('btn-logout').onclick = function(){
     session = { role:null, estudianteId:null, viewingId:null }; saveSession(); render();
   };
   bindEmpresaPicker();
   bindTabEvents();
-  if(session.role==='profesor' && !session.viewingId && ui.tab==='estudiantes'){ /* nothing extra */ }
-  if(ui.tab==='liquidaciones' && activeEstudiante()){
+  if(ui.tab==='liquidaciones' && getActiveId() && empresasLoaded){
     refreshMovView();
   }
 }
@@ -615,25 +643,23 @@ function renderTabContent(){
     if(ui.tab==='configuracion') return viewConfiguracionProfesor();
     return viewEstudiantesRoster();
   }
-  var AE = activeEstudiante();
-  if(!AE) return '<div class="card"><div class="empty">No se encontró la información de este estudiante.</div></div>';
-  if(!ui.empresaId && AE.empresas.length){ ui.empresaId = AE.empresas[0].id; saveUi(); }
-  if(ui.tab==='empresas') return viewEmpresas(AE);
-  if(ui.tab==='trabajadores') return viewTrabajadores(AE);
-  if(ui.tab==='liquidaciones') return viewLiquidaciones(AE);
-  if(ui.tab==='libro') return viewLibro(AE);
-  if(ui.tab==='parametros') return viewParametros(AE);
+  if(!empresasLoaded || !trabajadoresLoaded || !parametrosLoaded){
+    return '<div class="card"><div class="empty">Cargando información…</div></div>';
+  }
+  if(ui.tab==='empresas') return viewEmpresas();
+  if(ui.tab==='trabajadores') return viewTrabajadores();
+  if(ui.tab==='liquidaciones') return viewLiquidaciones();
+  if(ui.tab==='libro') return viewLibro();
+  if(ui.tab==='parametros') return viewParametros();
   return '';
 }
 
 /* ---- Vista: Estudiantes (profesor) ---- */
 function viewEstudiantesRoster(){
-  var list = appData.estudiantes.slice().sort(function(a,b){ return a.nombre.localeCompare(b.nombre,'es'); });
+  var list = estudiantes.slice();
   var rows = list.map(function(e){
     return '<tr><td><strong>' + e.nombre + '</strong></td>' +
       '<td><span class="code-chip">' + e.codigo + '</span></td>' +
-      '<td class="num">' + e.empresas.length + '</td>' +
-      '<td>' + (e.creadoEn ? new Date(e.creadoEn).toLocaleDateString('es-CL') : '—') + '</td>' +
       '<td><div class="row-actions">' +
       '<button class="btn secondary" data-act="ver-estudiante" data-id="' + e.id + '">Ver trabajo</button>' +
       '<button class="btn secondary" data-act="edit-estudiante" data-id="' + e.id + '">Editar</button>' +
@@ -642,9 +668,9 @@ function viewEstudiantesRoster(){
   }).join('');
   return '<div class="page-head"><h1>Estudiantes <span class="badge-count">' + list.length + '</span></h1>' +
     '<button class="btn gold" data-act="new-estudiante">+ Nuevo estudiante</button></div>' +
-    '<div class="disclaimer">Cada estudiante trabaja con su propio código, en su propio computador, y ve solo su información. Como profesor, puedes revisar (solo lectura) el trabajo de cualquier estudiante desde «Ver trabajo».</div>' +
+    '<div class="disclaimer">Cada estudiante trabaja con su propio código, desde cualquier computador, y ve solo su información. Como profesor, puedes revisar (solo lectura) el trabajo de cualquier estudiante desde «Ver trabajo».</div>' +
     '<div class="card">' + (list.length ?
-      '<table><thead><tr><th>Nombre</th><th>Código</th><th>Empresas</th><th>Creado</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
+      '<table><thead><tr><th>Nombre</th><th>Código</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<div class="empty"><div class="glyph">§</div>Aún no has agregado estudiantes.<br>Crea el primero para entregarle su código de acceso.</div>') +
     '</div>';
 }
@@ -658,7 +684,6 @@ function estudianteForm(e){
     '<button type="button" class="btn secondary" id="f-est-regen">Generar</button></div>' +
     '<div class="helptext">El estudiante usará este código para entrar a la plataforma.</div></div>';
 }
-
 function bindEstudianteFormRegen(){
   var b = document.getElementById('f-est-regen');
   if(b) b.onclick = function(){ document.getElementById('f-est-codigo').value = genCodigoEstudiante(); };
@@ -666,30 +691,28 @@ function bindEstudianteFormRegen(){
 
 /* ---- Vista: Configuración (profesor) ---- */
 function viewConfiguracionProfesor(){
-  var totalEmpresas = appData.estudiantes.reduce(function(a,e){ return a+e.empresas.length; }, 0);
   return '<div class="page-head"><h1>Configuración</h1></div>' +
     '<div class="card"><h2>Código de profesor</h2>' +
     '<p class="helptext" style="margin-bottom:14px;">Este es el código que usas para entrar como profesor y revisar el trabajo de tus estudiantes. No lo compartas con ellos.</p>' +
-    '<div class="grid grid-2"><div class="field"><label>Código</label><input id="p-prof-codigo" value="' + appData.profesorCodigo + '"></div></div>' +
+    '<div class="grid grid-2"><div class="field"><label>Código</label><input id="p-prof-codigo" value="' + configDoc.profesorCodigo + '"></div></div>' +
     '<button class="btn gold" data-act="save-profesor-codigo">Guardar código</button></div>' +
     '<div class="card"><h2>Resumen</h2><div class="totales-box">' +
-    '<div class="line"><span>Estudiantes registrados</span><span class="num">' + appData.estudiantes.length + '</span></div>' +
-    '<div class="line"><span>Empresas creadas en total</span><span class="num">' + totalEmpresas + '</span></div>' +
+    '<div class="line"><span>Estudiantes registrados</span><span class="num">' + estudiantes.length + '</span></div>' +
     '</div></div>';
 }
 
 /* ---- Vista: Empresas ---- */
-function viewEmpresas(AE){
+function viewEmpresas(){
   var RO = isReadOnly();
-  var rows = AE.empresas.map(function(e){
+  var rows = empresas.map(function(e){
     return '<tr><td><strong>' + e.razonSocial + '</strong><div class="helptext">' + (e.giro||'') + '</div></td>' +
       '<td class="mono">' + (e.rut||'') + '</td><td>' + (e.direccion||'—') + '</td><td>' + (e.representante||'—') + '</td>' +
       '<td>' + (RO ? '' : '<div class="row-actions"><button class="btn secondary" data-act="edit-empresa" data-id="' + e.id + '">Editar</button><button class="btn danger" data-act="del-empresa" data-id="' + e.id + '">Eliminar</button></div>') + '</td></tr>';
   }).join('');
-  return '<div class="page-head"><h1>Empresas registradas <span class="badge-count">' + AE.empresas.length + '/' + MAX_EMPRESAS + '</span></h1>' +
-    (RO ? '' : '<button class="btn gold" data-act="new-empresa" ' + (AE.empresas.length>=MAX_EMPRESAS?'disabled':'') + '>+ Nueva empresa</button>') + '</div>' +
+  return '<div class="page-head"><h1>Empresas registradas <span class="badge-count">' + empresas.length + '/' + MAX_EMPRESAS + '</span></h1>' +
+    (RO ? '' : '<button class="btn gold" data-act="new-empresa" ' + (empresas.length>=MAX_EMPRESAS?'disabled':'') + '>+ Nueva empresa</button>') + '</div>' +
     '<div class="disclaimer">Tope de ' + MAX_EMPRESAS + ' empresas por estudiante. Cada empresa mantiene su propia nómina de trabajadores, movimientos mensuales y libro de remuneraciones.</div>' +
-    '<div class="card">' + (AE.empresas.length ?
+    '<div class="card">' + (empresas.length ?
       '<table><thead><tr><th>Razón social</th><th>RUT</th><th>Dirección</th><th>Representante legal</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<div class="empty"><div class="glyph">§</div>Aún no registras empresas.<br>Crea la primera para comenzar a llevar sus remuneraciones.</div>') + '</div>';
 }
@@ -706,14 +729,14 @@ function empresaForm(e){
 }
 
 /* ---- Vista: Trabajadores ---- */
-function trabajadoresDeEmpresa(AE){ return AE.trabajadores.filter(function(t){ return t.empresaId===ui.empresaId; }); }
+function trabajadoresDeEmpresa(){ return trabajadores.filter(function(t){ return t.empresaId===ui.empresaId; }); }
 
-function viewTrabajadores(AE){
+function viewTrabajadores(){
   var RO = isReadOnly();
-  if(!AE.empresas.length){
+  if(!empresas.length){
     return '<div class="page-head"><h1>Trabajadores</h1></div><div class="card"><div class="empty"><div class="glyph">§</div>Primero crea una empresa en la pestaña «Empresas».</div></div>';
   }
-  var list = trabajadoresDeEmpresa(AE);
+  var list = trabajadoresDeEmpresa();
   var rows = list.map(function(t){
     return '<tr><td><strong>' + t.nombres + ' ' + t.apellidos + '</strong><div class="helptext">' + (t.cargo||'') + '</div></td>' +
       '<td class="mono">' + (t.rut||'—') + '</td>' +
@@ -723,15 +746,15 @@ function viewTrabajadores(AE){
       '<td><span class="pill ' + (t.activo!==false?'on':'off') + '">' + (t.activo!==false?'Activo':'Inactivo') + '</span></td>' +
       '<td>' + (RO ? '' : '<div class="row-actions"><button class="btn secondary" data-act="edit-trabajador" data-id="' + t.id + '">Editar</button><button class="btn danger" data-act="del-trabajador" data-id="' + t.id + '">Eliminar</button></div>') + '</td></tr>';
   }).join('');
-  return '<div class="page-head"><h1>Trabajadores</h1><div class="top-tools">' + empresaSelector(AE) + (RO ? '' : '<button class="btn gold" data-act="new-trabajador">+ Nuevo trabajador</button>') + '</div></div>' +
+  return '<div class="page-head"><h1>Trabajadores</h1><div class="top-tools">' + empresaSelector() + (RO ? '' : '<button class="btn gold" data-act="new-trabajador">+ Nuevo trabajador</button>') + '</div></div>' +
     '<div class="card">' + (list.length ?
       '<table><thead><tr><th>Nombre</th><th>RUT</th><th>Contrato</th><th style="text-align:right;">Sueldo base</th><th>AFP</th><th>Salud</th><th>Grat. legal</th><th>Estado</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<div class="empty"><div class="glyph">§</div>Esta empresa aún no tiene trabajadores registrados.</div>') + '</div>';
 }
 
-function trabajadorForm(t, AE){
+function trabajadorForm(t){
   t = t || {};
-  var afpOptions = Object.keys(AE.parametros.afp).map(function(a){ return '<option value="' + a + '" ' + (t.afp===a?'selected':'') + '>' + a + ' (' + AE.parametros.afp[a] + '%)</option>'; }).join('');
+  var afpOptions = Object.keys(parametrosActivos.afp).map(function(a){ return '<option value="' + a + '" ' + (t.afp===a?'selected':'') + '>' + a + ' (' + parametrosActivos.afp[a] + '%)</option>'; }).join('');
   return '<input type="hidden" id="f-id" value="' + (t.id||'') + '">' +
     '<div class="grid grid-2">' +
     '<div class="field"><label>Nombres</label><input id="f-nombres" value="' + (t.nombres||'') + '"></div>' +
@@ -761,10 +784,10 @@ function trabajadorForm(t, AE){
 }
 
 /* ---- Vista: Liquidaciones ---- */
-function empresaSelector(AE){
-  if(!AE.empresas.length) return '';
+function empresaSelector(){
+  if(!empresas.length) return '';
   return '<div class="empresa-picker"><label style="margin:0;">Empresa</label><select id="empresaPicker">' +
-    AE.empresas.map(function(e){ return '<option value="' + e.id + '" ' + (e.id===ui.empresaId?'selected':'') + '>' + e.razonSocial + '</option>'; }).join('') +
+    empresas.map(function(e){ return '<option value="' + e.id + '" ' + (e.id===ui.empresaId?'selected':'') + '>' + e.razonSocial + '</option>'; }).join('') +
     '</select></div>';
 }
 function bindEmpresaPicker(){
@@ -773,25 +796,30 @@ function bindEmpresaPicker(){
 }
 function periodoSelector(){ return '<input type="month" id="periodoPicker" value="' + ui.periodo + '">'; }
 
-function viewLiquidaciones(AE){
-  if(!AE.empresas.length){
+function viewLiquidaciones(){
+  if(!empresas.length){
     return '<div class="page-head"><h1>Liquidaciones</h1></div><div class="card"><div class="empty"><div class="glyph">§</div>Primero crea una empresa.</div></div>';
   }
-  return '<div class="page-head"><h1>Liquidaciones de sueldo</h1><div class="top-tools">' + empresaSelector(AE) + periodoSelector() + '</div></div>' +
+  return '<div class="page-head"><h1>Liquidaciones de sueldo</h1><div class="top-tools">' + empresaSelector() + periodoSelector() + '</div></div>' +
     '<div class="disclaimer">Verifica en Parámetros los valores de UF, UTM, sueldo mínimo y tasas AFP vigentes para el período antes de generar liquidaciones.</div>' +
-    '<div class="card" id="mov-card"><h2>Haberes y descuentos variables del período</h2></div>';
+    '<div class="card" id="mov-card"><h2>Haberes y descuentos variables del período</h2><div class="empty">Cargando…</div></div>';
 }
 
-var movCache = {};
-function ensureMovLoaded(AE){
+async function ensureMovLoaded(){
   var periodoEl = document.getElementById('periodoPicker');
-  ui.periodo = periodoEl ? periodoEl.value : ui.periodo;
-  saveUi();
-  var key = ui.empresaId + '::' + ui.periodo;
-  movCache = Object.assign({}, AE.movimientos[key] || {});
+  if(periodoEl){ ui.periodo = periodoEl.value; saveUi(); }
+  if(!ui.empresaId){ movCache = {}; return; }
+  var key = ui.empresaId + '_' + ui.periodo;
+  try{
+    var snap = await getDoc(doc(db,'remu_movimientos', key));
+    movCache = snap.exists() ? Object.assign({}, snap.data().datos||{}) : {};
+  }catch(err){
+    movCache = {};
+    toast('No se pudieron cargar los movimientos: ' + err.message);
+  }
 }
 
-function renderMovTable(AE, list){
+function renderMovTable(list){
   var RO = isReadOnly();
   var rows = list.map(function(t){
     var m = movCache[t.id] || {};
@@ -814,14 +842,12 @@ function renderMovTable(AE, list){
     '<div id="liq-detail"></div>';
 }
 
-function refreshMovView(){
-  var AE = activeEstudiante();
-  if(!AE || !ui.empresaId) return;
-  ensureMovLoaded(AE);
+async function refreshMovView(){
+  await ensureMovLoaded();
   var card = document.getElementById('mov-card');
   if(!card) return;
-  var list = trabajadoresDeEmpresa(AE).filter(function(t){ return t.activo!==false; });
-  var html = list.length ? renderMovTable(AE, list) : '<div class="empty">No hay trabajadores activos en esta empresa.</div>';
+  var list = trabajadoresDeEmpresa().filter(function(t){ return t.activo!==false; });
+  var html = list.length ? renderMovTable(list) : '<div class="empty">No hay trabajadores activos en esta empresa.</div>';
   Array.prototype.slice.call(card.querySelectorAll(':scope > *:not(h2)')).forEach(function(n){ n.remove(); });
   var wrap = document.createElement('div'); wrap.innerHTML = html;
   Array.prototype.slice.call(wrap.childNodes).forEach(function(n){ card.appendChild(n); });
@@ -844,10 +870,11 @@ function bindMovEvents(){
   var saveMovEl = document.getElementById('save-mov');
   if(saveMovEl) saveMovEl.onclick = async function(){
     collectMovFromDOM();
-    var AE = activeEstudiante();
-    var key = ui.empresaId + '::' + ui.periodo;
-    AE.movimientos[key] = movCache;
-    await guardar('Movimientos del período ' + ui.periodo + ' guardados correctamente');
+    var key = ui.empresaId + '_' + ui.periodo;
+    try{
+      await setDoc(doc(db,'remu_movimientos', key), { estudianteId: getActiveId(), empresaId: ui.empresaId, periodo: ui.periodo, datos: movCache });
+      toast('Movimientos del período ' + ui.periodo + ' guardados correctamente');
+    }catch(err){ toast('No se pudo guardar: ' + err.message); }
   };
   document.querySelectorAll('[data-act="calc-liq"]').forEach(function(b){
     b.onclick = function(){ collectMovFromDOM(); showLiqDetail(b.dataset.id); };
@@ -858,10 +885,9 @@ function bindMovEvents(){
 }
 
 function showLiqDetail(trabajadorId){
-  var AE = activeEstudiante();
-  var t = AE.trabajadores.find(function(x){ return x.id===trabajadorId; });
+  var t = trabajadores.find(function(x){ return x.id===trabajadorId; });
   var m = movCache[trabajadorId] || {};
-  var l = calcularLiquidacion(t, m, AE.parametros);
+  var l = calcularLiquidacion(t, m, parametrosActivos);
   var el = document.getElementById('liq-detail');
   el.innerHTML = '<div class="totales-box" style="margin-top:20px;"><h2 style="margin-top:0;">Liquidación — ' + t.nombres + ' ' + t.apellidos + ' (' + ui.periodo + ')</h2>' +
     '<div class="grid grid-2"><div>' +
@@ -885,9 +911,8 @@ function showLiqDetail(trabajadorId){
     '</div>';
 }
 
-/* ---- Impresión (usa el diálogo de impresión del navegador; "Guardar como PDF"
-   funciona como destino en Chrome, Edge, Safari y Firefox sin depender de
-   ninguna librería externa). ---- */
+/* ---- Impresión (diálogo de impresión del navegador; "Guardar como PDF"
+   funciona como destino en Chrome, Edge, Safari y Firefox). ---- */
 function startPrint(html){
   document.getElementById('print-area').innerHTML =
     '<div class="print-toolbar"><button class="btn gold" id="print-now">Imprimir / Guardar como PDF</button> <button class="btn secondary" id="print-cancel">Volver</button></div>' + html;
@@ -895,14 +920,12 @@ function startPrint(html){
   document.getElementById('print-now').onclick = function(){ window.print(); };
   document.getElementById('print-cancel').onclick = function(){ document.body.classList.remove('printing'); render(); };
 }
-window.addEventListener('afterprint', function(){ /* deja la vista de impresión visible para reintentar o volver */ });
 
 function imprimirLiquidacion(trabajadorId){
-  var AE = activeEstudiante();
-  var t = AE.trabajadores.find(function(x){ return x.id===trabajadorId; });
-  var empresa = AE.empresas.find(function(x){ return x.id===ui.empresaId; });
+  var t = trabajadores.find(function(x){ return x.id===trabajadorId; });
+  var empresa = empresas.find(function(x){ return x.id===ui.empresaId; });
   var m = movCache[trabajadorId] || {};
-  var l = calcularLiquidacion(t, m, AE.parametros);
+  var l = calcularLiquidacion(t, m, parametrosActivos);
   var html = '<div class="print-page">' +
     '<h1>' + empresa.razonSocial + '</h1>' +
     '<div class="print-sub">RUT ' + (empresa.rut||'—') + (empresa.giro?(' · '+empresa.giro):'') + (empresa.direccion?(' · '+empresa.direccion):'') + '<br>' +
@@ -910,7 +933,7 @@ function imprimirLiquidacion(trabajadorId){
     '<p><strong>Trabajador:</strong> ' + t.nombres + ' ' + t.apellidos + ' &nbsp; <strong>RUT:</strong> ' + (t.rut||'—') + '<br>' +
     '<strong>Cargo:</strong> ' + (t.cargo||'—') + ' &nbsp; <strong>Fecha ingreso:</strong> ' + (t.fechaIngreso||'—') + '<br>' +
     '<strong>Contrato:</strong> ' + (t.tipoContrato==='indefinido'?'Indefinido':t.tipoContrato==='plazo_fijo'?'Plazo fijo':'Obra o faena') + ' &nbsp; <strong>AFP:</strong> ' + t.afp + ' &nbsp; <strong>Salud:</strong> ' + (t.salud==='isapre'?'Isapre':'Fonasa') + '</p>' +
-    '<div class="grid grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">' +
+    '<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">' +
     '<table><thead><tr><th colspan="2">HABERES</th></tr></thead><tbody>' +
     '<tr><td>Sueldo base proporcional</td><td class="num">' + fmt(l.sueldoProp) + '</td></tr>' +
     '<tr><td>Horas extra (' + l.horasExtra + ' hrs)</td><td class="num">' + fmt(l.pagoHorasExtra) + '</td></tr>' +
@@ -936,29 +959,32 @@ function imprimirLiquidacion(trabajadorId){
 }
 
 /* ---- Vista: Libro de Remuneraciones ---- */
-function viewLibro(AE){
-  if(!AE.empresas.length){
+function viewLibro(){
+  if(!empresas.length){
     return '<div class="page-head"><h1>Libro de Remuneraciones</h1></div><div class="card"><div class="empty"><div class="glyph">§</div>Primero crea una empresa.</div></div>';
   }
-  return '<div class="page-head"><h1>Libro de Remuneraciones</h1><div class="top-tools">' + empresaSelector(AE) + periodoSelector() +
+  return '<div class="page-head"><h1>Libro de Remuneraciones</h1><div class="top-tools">' + empresaSelector() + periodoSelector() +
     '<button class="btn gold" id="gen-libro">Calcular y ver libro</button></div></div>' +
     '<div class="disclaimer">El libro consolida, para el período seleccionado, la liquidación de todos los trabajadores activos de la empresa (Art. 62 Código del Trabajo).</div>' +
     '<div class="card" id="libro-preview"><div class="empty">Selecciona el período y presiona «Calcular y ver libro» para generar la nómina.</div></div>';
 }
 
-function calcularFilasLibro(AE){
-  var key = ui.empresaId + '::' + ui.periodo;
-  var mov = AE.movimientos[key] || {};
-  var list = trabajadoresDeEmpresa(AE).filter(function(t){ return t.activo!==false; });
-  return list.map(function(t){ return { t: t, l: calcularLiquidacion(t, mov[t.id] || {}, AE.parametros) }; });
+async function calcularFilasLibro(){
+  var key = ui.empresaId + '_' + ui.periodo;
+  var mov = {};
+  try{
+    var snap = await getDoc(doc(db,'remu_movimientos', key));
+    mov = snap.exists() ? (snap.data().datos||{}) : {};
+  }catch(err){ toast('No se pudieron cargar los movimientos: ' + err.message); }
+  var list = trabajadoresDeEmpresa().filter(function(t){ return t.activo!==false; });
+  return list.map(function(t){ return { t: t, l: calcularLiquidacion(t, mov[t.id] || {}, parametrosActivos) }; });
 }
 
-function generarLibro(){
-  var AE = activeEstudiante();
-  var empresa = AE.empresas.find(function(x){ return x.id===ui.empresaId; });
+async function generarLibro(){
+  var empresa = empresas.find(function(x){ return x.id===ui.empresaId; });
   var periodoEl = document.getElementById('periodoPicker');
   if(periodoEl){ ui.periodo = periodoEl.value; saveUi(); }
-  var filas = calcularFilasLibro(AE);
+  var filas = await calcularFilasLibro();
   var prev = document.getElementById('libro-preview');
   if(!filas.length){ toast('No hay trabajadores activos'); return; }
   var rows = filas.map(function(f){
@@ -980,13 +1006,10 @@ function generarLibro(){
     '<td class="num">' + fmt(totales.imponible) + '</td><td class="num">' + fmt(totales.afp) + '</td><td class="num">' + fmt(totales.salud) + '</td>' +
     '<td class="num">' + fmt(totales.impuesto) + '</td><td class="num">' + fmt(totales.desc) + '</td><td class="num">' + fmt(totales.liquido) + '</td></tr></tfoot></table></div>' +
     '<div style="margin-top:16px;"><button class="btn gold" id="print-libro">Imprimir / Guardar como PDF</button></div>';
-  document.getElementById('print-libro').onclick = function(){ imprimirLibro(); };
+  document.getElementById('print-libro').onclick = function(){ imprimirLibro(filas, empresa); };
 }
 
-function imprimirLibro(){
-  var AE = activeEstudiante();
-  var empresa = AE.empresas.find(function(x){ return x.id===ui.empresaId; });
-  var filas = calcularFilasLibro(AE);
+function imprimirLibro(filas, empresa){
   if(!filas.length){ toast('No hay trabajadores activos'); return; }
   var rows = filas.map(function(f){
     var t=f.t, l=f.l;
@@ -1018,15 +1041,16 @@ function imprimirLibro(){
 }
 
 /* ---- Vista: Parámetros legales ---- */
-function viewParametros(AE){
+function viewParametros(){
   var RO = isReadOnly();
-  var p = AE.parametros;
+  var p = parametrosActivos;
   var afpRows = Object.keys(p.afp).map(function(name){
     return '<div class="field"><label>' + name + '</label><input type="number" step="0.01" class="afp-tasa" data-afp="' + name + '" value="' + p.afp[name] + '" ' + (RO?'disabled':'') + '></div>';
   }).join('');
   var asigRows = p.asigFamiliar.map(function(t, i){
+    var h = asigHasta(t);
     return '<div class="grid grid-2" style="margin-bottom:8px;">' +
-      '<div class="field" style="margin-bottom:0;"><label>Tramo ' + (i+1) + ' — renta hasta $</label><input type="number" class="asig-hasta" data-i="' + i + '" value="' + (t.hasta===Infinity?'':t.hasta) + '" placeholder="' + (t.hasta===Infinity?'sin tope':'') + '" ' + (RO?'disabled':'') + '></div>' +
+      '<div class="field" style="margin-bottom:0;"><label>Tramo ' + (i+1) + ' — renta hasta $</label><input type="number" class="asig-hasta" data-i="' + i + '" value="' + (h===Infinity?'':h) + '" placeholder="' + (h===Infinity?'sin tope':'') + '" ' + (RO?'disabled':'') + '></div>' +
       '<div class="field" style="margin-bottom:0;"><label>Monto asignación</label><input type="number" class="asig-monto" data-i="' + i + '" value="' + t.monto + '" ' + (RO?'disabled':'') + '></div></div>';
   }).join('');
   return '<div class="page-head"><h1>Parámetros legales</h1></div>' +
@@ -1053,6 +1077,35 @@ function bindTabEvents(){
 
 var READONLY_SAFE = {'calc-liq':1,'print-liq':1,'ver-estudiante':1,'volver-lista':1};
 
+async function cascadeDeleteEmpresa(empresaId){
+  var trabSnap = await getDocs(query(collection(db,'remu_trabajadores'), where('empresaId','==',empresaId)));
+  var movSnap = await getDocs(query(collection(db,'remu_movimientos'), where('empresaId','==',empresaId)));
+  var batch = writeBatch(db);
+  trabSnap.docs.forEach(function(d){ batch.delete(d.ref); });
+  movSnap.docs.forEach(function(d){ batch.delete(d.ref); });
+  batch.delete(doc(db,'remu_empresas', empresaId));
+  await batch.commit();
+}
+
+async function cascadeDeleteEstudiante(estudianteId){
+  var empSnap = await getDocs(query(collection(db,'remu_empresas'), where('estudianteId','==',estudianteId)));
+  var trabSnap = await getDocs(query(collection(db,'remu_trabajadores'), where('estudianteId','==',estudianteId)));
+  var empIds = empSnap.docs.map(function(d){ return d.id; });
+  var batch = writeBatch(db);
+  empSnap.docs.forEach(function(d){ batch.delete(d.ref); });
+  trabSnap.docs.forEach(function(d){ batch.delete(d.ref); });
+  batch.delete(doc(db,'remu_parametros', estudianteId));
+  batch.delete(doc(db,'remu_estudiantes', estudianteId));
+  for(var i=0;i<empIds.length;i+=30){
+    var chunk = empIds.slice(i,i+30);
+    if(chunk.length){
+      var movSnap = await getDocs(query(collection(db,'remu_movimientos'), where('empresaId','in',chunk)));
+      movSnap.docs.forEach(function(d){ batch.delete(d.ref); });
+    }
+  }
+  await batch.commit();
+}
+
 async function handleAction(act, id){
   var RO = isReadOnly();
   if(RO && !READONLY_SAFE[act]){ toast('Estás en modo solo lectura (viendo el trabajo de un estudiante).'); return; }
@@ -1063,33 +1116,43 @@ async function handleAction(act, id){
       var codigo = document.getElementById('f-est-codigo').value.trim();
       if(!nombre){ toast('Indica el nombre del estudiante'); return false; }
       if(!codigo || codigo.length<4){ toast('El código debe tener al menos 4 caracteres'); return false; }
-      if(codigo.toLowerCase()===(appData.profesorCodigo||'').toLowerCase() || appData.estudiantes.some(function(e){ return e.codigo.toLowerCase()===codigo.toLowerCase(); })){
+      if(codigo.toLowerCase()===(configDoc.profesorCodigo||'').toLowerCase() || estudiantes.some(function(e){ return e.codigo.toLowerCase()===codigo.toLowerCase(); })){
         toast('Ese código ya está en uso, elige otro'); return false;
       }
-      appData.estudiantes.push({ id: uid(), nombre: nombre, codigo: codigo, creadoEn: Date.now(), empresas: [], trabajadores: [], movimientos: {}, parametros: defaultParametros() });
-      return await guardar('Estudiante creado. Código: ' + codigo);
+      try{
+        await addDoc(collection(db,'remu_estudiantes'), { nombre: nombre, codigo: codigo, creadoEn: serverTimestamp() });
+        toast('Estudiante creado. Código: ' + codigo);
+        return true;
+      }catch(err){ toast('No se pudo guardar: ' + err.message); return false; }
     }, 'Crear estudiante');
     bindEstudianteFormRegen();
   }
   else if(act==='edit-estudiante'){
-    var e0 = appData.estudiantes.find(function(x){ return x.id===id; });
+    var e0 = estudiantes.find(function(x){ return x.id===id; });
     openModal('Editar estudiante', estudianteForm(e0), async function(){
       var nombre = document.getElementById('f-est-nombre').value.trim();
       var codigo = document.getElementById('f-est-codigo').value.trim();
       if(!nombre){ toast('Indica el nombre del estudiante'); return false; }
       if(!codigo || codigo.length<4){ toast('El código debe tener al menos 4 caracteres'); return false; }
-      var dup = appData.estudiantes.some(function(x){ return x.id!==e0.id && x.codigo.toLowerCase()===codigo.toLowerCase(); });
-      if(dup || codigo.toLowerCase()===(appData.profesorCodigo||'').toLowerCase()){ toast('Ese código ya está en uso, elige otro'); return false; }
-      e0.nombre = nombre; e0.codigo = codigo;
-      return await guardar('Estudiante actualizado');
+      var dup = estudiantes.some(function(x){ return x.id!==e0.id && x.codigo.toLowerCase()===codigo.toLowerCase(); });
+      if(dup || codigo.toLowerCase()===(configDoc.profesorCodigo||'').toLowerCase()){ toast('Ese código ya está en uso, elige otro'); return false; }
+      try{
+        await updateDoc(doc(db,'remu_estudiantes', e0.id), { nombre: nombre, codigo: codigo });
+        toast('Estudiante actualizado');
+        return true;
+      }catch(err){ toast('No se pudo guardar: ' + err.message); return false; }
     }, 'Guardar cambios');
     bindEstudianteFormRegen();
   }
   else if(act==='del-estudiante'){
-    var eDel = appData.estudiantes.find(function(x){ return x.id===id; });
+    var eDel = estudiantes.find(function(x){ return x.id===id; });
     if(!confirm('¿Eliminar a ' + (eDel?eDel.nombre:'este estudiante') + '? Se perderá todo su trabajo (empresas, trabajadores y liquidaciones).')) return;
-    appData.estudiantes = appData.estudiantes.filter(function(x){ return x.id!==id; });
-    await guardar('Estudiante eliminado');
+    try{
+      await cascadeDeleteEstudiante(id);
+      if(session.viewingId===id){ session.viewingId=null; saveSession(); }
+      if(session.estudianteId===id){ session={role:null,estudianteId:null,viewingId:null}; saveSession(); }
+      toast('Estudiante eliminado');
+    }catch(err){ toast('No se pudo eliminar: ' + err.message); }
   }
   else if(act==='ver-estudiante'){
     session.viewingId = id; saveSession(); ui.tab='empresas'; ui.empresaId=null; saveUi(); render();
@@ -1100,58 +1163,70 @@ async function handleAction(act, id){
   else if(act==='save-profesor-codigo'){
     var val = document.getElementById('p-prof-codigo').value.trim();
     if(!val || val.length<4){ toast('El código debe tener al menos 4 caracteres'); return; }
-    if(appData.estudiantes.some(function(e){ return e.codigo.toLowerCase()===val.toLowerCase(); })){ toast('Ese código ya lo usa un estudiante'); return; }
-    appData.profesorCodigo = val;
-    await guardar('Código de profesor actualizado');
+    if(estudiantes.some(function(e){ return e.codigo.toLowerCase()===val.toLowerCase(); })){ toast('Ese código ya lo usa un estudiante'); return; }
+    try{
+      await setDoc(doc(db,'remu_config','main'), { profesorCodigo: val }, { merge:true });
+      toast('Código de profesor actualizado');
+    }catch(err){ toast('No se pudo guardar: ' + err.message); }
   }
   else if(act==='new-empresa'){
-    var AEne = activeEstudiante();
+    var activeId = getActiveId();
     openModal('Nueva empresa', empresaForm(), async function(){
       var razonSocial = document.getElementById('f-razonSocial').value.trim();
       if(!razonSocial){ toast('Indica la razón social'); return false; }
-      AEne.empresas.push({ id: uid(), razonSocial: razonSocial, rut: document.getElementById('f-rut').value.trim(), giro: document.getElementById('f-giro').value.trim(), representante: document.getElementById('f-representante').value.trim(), direccion: document.getElementById('f-direccion').value.trim() });
-      return await guardar('Empresa creada y guardada correctamente');
+      try{
+        await addDoc(collection(db,'remu_empresas'), {
+          estudianteId: activeId, razonSocial: razonSocial,
+          rut: document.getElementById('f-rut').value.trim(),
+          giro: document.getElementById('f-giro').value.trim(),
+          representante: document.getElementById('f-representante').value.trim(),
+          direccion: document.getElementById('f-direccion').value.trim()
+        });
+        toast('Empresa creada y guardada correctamente');
+        return true;
+      }catch(err){ toast('No se pudo guardar: ' + err.message); return false; }
     });
   }
   else if(act==='edit-empresa'){
-    var AEee = activeEstudiante();
-    var emp = AEee.empresas.find(function(x){ return x.id===id; });
+    var emp = empresas.find(function(x){ return x.id===id; });
     openModal('Editar empresa', empresaForm(emp), async function(){
-      emp.razonSocial = document.getElementById('f-razonSocial').value.trim();
-      emp.rut = document.getElementById('f-rut').value.trim();
-      emp.giro = document.getElementById('f-giro').value.trim();
-      emp.representante = document.getElementById('f-representante').value.trim();
-      emp.direccion = document.getElementById('f-direccion').value.trim();
-      return await guardar('Empresa actualizada y guardada correctamente');
+      try{
+        await updateDoc(doc(db,'remu_empresas', id), {
+          razonSocial: document.getElementById('f-razonSocial').value.trim(),
+          rut: document.getElementById('f-rut').value.trim(),
+          giro: document.getElementById('f-giro').value.trim(),
+          representante: document.getElementById('f-representante').value.trim(),
+          direccion: document.getElementById('f-direccion').value.trim()
+        });
+        toast('Empresa actualizada y guardada correctamente');
+        return true;
+      }catch(err){ toast('No se pudo guardar: ' + err.message); return false; }
     });
   }
   else if(act==='del-empresa'){
     if(!confirm('¿Eliminar esta empresa? También se perderán sus trabajadores y movimientos.')) return;
-    var AEde = activeEstudiante();
-    AEde.empresas = AEde.empresas.filter(function(x){ return x.id!==id; });
-    AEde.trabajadores = AEde.trabajadores.filter(function(x){ return x.empresaId!==id; });
-    if(ui.empresaId===id) ui.empresaId = null;
-    saveUi();
-    await guardar('Empresa eliminada y cambios guardados');
+    try{
+      await cascadeDeleteEmpresa(id);
+      if(ui.empresaId===id){ ui.empresaId = null; saveUi(); }
+      toast('Empresa eliminada y cambios guardados');
+    }catch(err){ toast('No se pudo eliminar: ' + err.message); }
   }
   else if(act==='new-trabajador'){
-    var AEnt = activeEstudiante();
-    openModal('Nuevo trabajador', trabajadorForm(null, AEnt), async function(){ return await saveTrabajadorFromForm(null, AEnt); }, 'Guardar trabajador');
+    openModal('Nuevo trabajador', trabajadorForm(null), async function(){ return await saveTrabajadorFromForm(null); }, 'Guardar trabajador');
   }
   else if(act==='edit-trabajador'){
-    var AEet = activeEstudiante();
-    var trab = AEet.trabajadores.find(function(x){ return x.id===id; });
-    openModal('Editar trabajador', trabajadorForm(trab, AEet), async function(){ return await saveTrabajadorFromForm(trab, AEet); }, 'Guardar cambios');
+    var trab = trabajadores.find(function(x){ return x.id===id; });
+    openModal('Editar trabajador', trabajadorForm(trab), async function(){ return await saveTrabajadorFromForm(trab); }, 'Guardar cambios');
   }
   else if(act==='del-trabajador'){
     if(!confirm('¿Eliminar a este trabajador de la nómina?')) return;
-    var AEdt = activeEstudiante();
-    AEdt.trabajadores = AEdt.trabajadores.filter(function(x){ return x.id!==id; });
-    await guardar('Trabajador eliminado y cambios guardados');
+    try{
+      await deleteDoc(doc(db,'remu_trabajadores', id));
+      toast('Trabajador eliminado y cambios guardados');
+    }catch(err){ toast('No se pudo eliminar: ' + err.message); }
   }
   else if(act==='save-parametros'){
-    var AEp = activeEstudiante();
-    var p = AEp.parametros;
+    var p = JSON.parse(JSON.stringify(parametrosActivos));
     p.uf = Number(document.getElementById('p-uf').value)||p.uf;
     p.utm = Number(document.getElementById('p-utm').value)||p.utm;
     p.sueldoMinimo = Number(document.getElementById('p-sm').value)||p.sueldoMinimo;
@@ -1159,18 +1234,21 @@ async function handleAction(act, id){
     p.saludPct = Number(document.getElementById('p-salud').value)||p.saludPct;
     p.cesantiaTrabajadorIndef = Number(document.getElementById('p-cestrab').value)||p.cesantiaTrabajadorIndef;
     document.querySelectorAll('.afp-tasa').forEach(function(inp){ p.afp[inp.dataset.afp] = Number(inp.value)||0; });
-    document.querySelectorAll('.asig-hasta').forEach(function(inp){ var i=Number(inp.dataset.i); p.asigFamiliar[i].hasta = inp.value===''? Infinity : Number(inp.value); });
+    document.querySelectorAll('.asig-hasta').forEach(function(inp){ var i=Number(inp.dataset.i); p.asigFamiliar[i].hasta = inp.value===''? null : Number(inp.value); });
     document.querySelectorAll('.asig-monto').forEach(function(inp){ var i=Number(inp.dataset.i); p.asigFamiliar[i].monto = Number(inp.value)||0; });
-    await guardar('Parámetros guardados correctamente');
+    try{
+      await setDoc(doc(db,'remu_parametros', getActiveId()), p);
+      toast('Parámetros guardados correctamente');
+    }catch(err){ toast('No se pudo guardar: ' + err.message); }
   }
 }
 
-async function saveTrabajadorFromForm(existing, AE){
+async function saveTrabajadorFromForm(existing){
   var nombres = document.getElementById('f-nombres').value.trim();
   var apellidos = document.getElementById('f-apellidos').value.trim();
   if(!nombres || !apellidos){ toast('Indica nombres y apellidos'); return false; }
   var data = {
-    id: existing ? existing.id : uid(), empresaId: ui.empresaId, nombres: nombres, apellidos: apellidos,
+    estudianteId: getActiveId(), empresaId: ui.empresaId, nombres: nombres, apellidos: apellidos,
     rut: document.getElementById('f-trut').value.trim(), cargo: document.getElementById('f-cargo').value.trim(),
     fechaIngreso: document.getElementById('f-fecha').value, tipoContrato: document.getElementById('f-tipoContrato').value,
     sueldoBase: Number(document.getElementById('f-sueldoBase').value)||0, afp: document.getElementById('f-afp').value,
@@ -1178,8 +1256,12 @@ async function saveTrabajadorFromForm(existing, AE){
     cargasFamiliares: Number(document.getElementById('f-cargas').value)||0, cuentaBanco: document.getElementById('f-cuenta').value.trim(),
     gratificacionLegal: document.getElementById('f-gratificacion').value !== 'no', activo: document.getElementById('f-activo').checked
   };
-  if(existing){ Object.assign(existing, data); } else { AE.trabajadores.push(data); }
-  return await guardar(existing ? 'Trabajador guardado correctamente' : 'Trabajador creado y guardado correctamente');
+  try{
+    if(existing){ await updateDoc(doc(db,'remu_trabajadores', existing.id), data); }
+    else{ await addDoc(collection(db,'remu_trabajadores'), data); }
+    toast(existing ? 'Trabajador guardado correctamente' : 'Trabajador creado y guardado correctamente');
+    return true;
+  }catch(err){ toast('No se pudo guardar: ' + err.message); return false; }
 }
 
 document.addEventListener('click', function(e){
